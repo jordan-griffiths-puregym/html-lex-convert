@@ -1,0 +1,76 @@
+trigger: none
+
+pool: 
+  name: Azure Pipelines
+  vmImage: ubuntu-latest
+
+stages:
+  - stage: deploy
+    displayName: Build and Deploy
+    variables:
+      - group: convert-to-lexical
+      - name: imageName
+        value: convert-to-lexical-expressapi
+
+    jobs:
+      - job: docker_build
+        displayName: Docker build
+        steps:
+          - checkout: self
+            
+          - task: Docker@2
+            displayName: Build and push to ACR
+            inputs:
+              command: buildAndPush
+              containerRegistry: convert-to-lexical-docker-servicecon
+              repository: '${{ variables.imageName }}'
+              dockerfile: src/convert-to-lexical-expressapi/Dockerfile
+              tags: $(Build.BuildId)
+
+      - job: tf_job
+        displayName: TF
+        dependsOn: docker_build
+        steps:
+          - checkout: self
+            
+          - task: TerraformInstaller@0
+            displayName: Install Terraform
+            inputs:
+              terraformVersion: 1.10.5
+
+          - task: TerraformTaskV4@4
+            displayName: terraform init
+            inputs:
+              provider: 'azurerm'
+              command: 'init'
+              workingDirectory: '$(Build.SourcesDirectory)/iac'
+              backendServiceArm: 'convert-to-lexical-servicecon'
+              backendAzureRmResourceGroupName: 'tf-convert-to-lexical'
+              backendAzureRmStorageAccountName: 'converttolexicalsto'
+              backendAzureRmContainerName: 'tfstate'
+              backendAzureRmKey: 'terraform.tfstate'
+
+          - task: TerraformTaskV4@4
+            displayName: 'Validate Terraform'
+            inputs:
+              provider: 'azurerm'
+              command: 'validate'
+              workingDirectory: '$(Build.SourcesDirectory)/iac'
+
+          - task: TerraformTaskV4@4
+            displayName: terraform plan
+            inputs:
+              provider: 'azurerm'
+              command: 'plan'
+              commandOptions: '-out main.tfplan -detailed-exitcode -var "acrpassword=$(acr_password)" -var "imageTag=$(Build.BuildId)" -var "convertKey=$(convert_key)"'
+              environmentServiceNameAzureRM: 'convert-to-lexical-servicecon'
+              workingDirectory: '$(Build.SourcesDirectory)/iac'
+
+          - task: TerraformTaskV4@4
+            displayName: terraform apply
+            inputs:
+              provider: 'azurerm'
+              command: 'apply'
+              commandOptions: 'main.tfplan'
+              environmentServiceNameAzureRM: 'convert-to-lexical-servicecon'
+              workingDirectory: '$(Build.SourcesDirectory)/iac'
